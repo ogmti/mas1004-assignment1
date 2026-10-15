@@ -50,7 +50,21 @@ def prepare_image(image):
     The web page does these same six steps in JavaScript. If your version is
     different, the self test badge at the top of your page turns red.
     """
-    raise NotImplementedError("Problem 2: fill in prepare_image")
+    from torchvision import transforms
+
+    # 1. RGB
+    image = image.convert("RGB")
+    steps = transforms.Compose([
+        # 2. shorter side to RESIZE, keeping the shape, bilinear
+        transforms.Resize(RESIZE, interpolation=transforms.InterpolationMode.BILINEAR),
+        # 3. the CROP x CROP square in the middle
+        transforms.CenterCrop(CROP),
+        # 4. divide by 255 and 6. channels first: (3, CROP, CROP)
+        transforms.ToTensor(),
+        # 5. per channel: subtract MEAN[c], divide by STD[c]
+        transforms.Normalize(MEAN, STD),
+    ])
+    return steps(image).numpy().astype(np.float32)
 
 
 def load_folder(root):
@@ -83,7 +97,36 @@ def load_folder(root):
     Memory: every image becomes 3 x 224 x 224 numbers of 4 bytes, about 0.6 MB.
     750 images is about 450 MB. That fits on Colab and on most laptops.
     """
-    raise NotImplementedError("Problem 2: fill in load_folder")
+    from pathlib import Path
+
+    from PIL import Image
+
+    root = Path(root)
+    class_names = sorted(d.name for d in root.iterdir() if d.is_dir())
+
+    images, labels, paths = [], [], []
+    for label, name in enumerate(class_names):
+        files = sorted(
+            f for f in (root / name).iterdir()
+            if f.is_file() and f.suffix.lower() in IMAGE_SUFFIXES
+        )
+        for path in files:
+            try:
+                with Image.open(path) as image:
+                    x = prepare_image(image)
+            except Exception:
+                # A broken file: skip it instead of crashing.
+                continue
+            images.append(x)
+            labels.append(label)
+            paths.append(path)
+
+    if images:
+        X = np.stack(images).astype(np.float32)
+    else:
+        X = np.zeros((0, 3, CROP, CROP), dtype=np.float32)
+    y = np.array(labels, dtype=np.int64)
+    return X, y, class_names, paths
 
 
 def split_train_test(X, y, paths, test_ratio=0.2, seed=0):
@@ -102,4 +145,23 @@ def split_train_test(X, y, paths, test_ratio=0.2, seed=0):
         up with a class that has no test images at all, and then your accuracy
         number means nothing.
     """
-    raise NotImplementedError("Problem 2: fill in split_train_test")
+    rng = np.random.default_rng(seed)
+    train_rows, test_rows = [], []
+
+    # Split each class on its own, so every class lands on both sides.
+    for label in np.unique(y):
+        rows = np.flatnonzero(y == label)
+        rng.shuffle(rows)
+        n_test = int(round(len(rows) * test_ratio))
+        if len(rows) >= 2:
+            n_test = min(max(n_test, 1), len(rows) - 1)
+        test_rows.extend(rows[:n_test])
+        train_rows.extend(rows[n_test:])
+
+    # Each row goes to exactly one side, so no image is on both.
+    train_rows = np.sort(np.array(train_rows, dtype=np.int64))
+    test_rows = np.sort(np.array(test_rows, dtype=np.int64))
+    return (
+        X[train_rows], y[train_rows], [paths[i] for i in train_rows],
+        X[test_rows], y[test_rows], [paths[i] for i in test_rows],
+    )
